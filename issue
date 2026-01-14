@@ -1,0 +1,7 @@
+We are seeing strange issues where some of the MT filebeat data is missing aws metat data.  
+What I have check:
+I have checked the ingest pipeline and that enriches the "cloud.account.name" from the "cloud.account.id", that seems to be working. 
+we are seeing ingestion which contains both fields, this tells me that the pipeline is working
+From what I could tell, the issue doesn't seem to be happening to all AWS/MT ingested data.  and seem to start at the beginning of this week.  here's an example on an step function ingestion where we start seeing the missing data after 1/9.  this kind of coincide with the friday release, not saying the release caused the issue, but it's strange.
+ 
+The issue seems to be random, meaning it's doesn't seem to tied to any config version, account, region, service type...it does seem to be related to filebeat agents on some k8 node, but this is also seem to be random, meaning there doesn't seem to be config character on the nodes that are missing this info...
