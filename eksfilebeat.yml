@@ -1,0 +1,195 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${namespace}
+  labels:
+    name: ${namespace}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: filebeat-config
+  namespace: ${namespace}
+  labels:
+    k8s-app: filebeat
+type: Opaque
+stringData:
+  filebeat.yml: |-
+    filebeat.inputs:
+    - type: filestream
+      id: var_log_messages
+      paths:
+        - /var/log/messages
+    - type: container
+      paths:
+        - /var/log/containers/*.log
+      processors:
+        - add_kubernetes_metadata:
+            in_cluster: true
+            host: $${NODE_NAME}
+            matchers:
+            - logs_path:
+                logs_path: "/var/log/containers/"
+        - decode_json_fields:
+            fields: ["message"]
+            overwrite_keys: true
+            target: ""
+            add_error_key: true
+    processors:
+      - add_cloud_metadata:
+          providers: ["aws"]
+      - add_host_metadata:
+      - drop_event:
+          when:
+            contains:
+              kubernetes.container.name: "calico-node"
+
+    cloud.id: $${ELASTIC_CLOUD_ID}
+    cloud.auth: $${ELASTIC_CLOUD_AUTH}
+
+    setup.template.enabled: false
+    setup.ilm.enabled: false
+    queue.mem:
+      events: 4096
+      flush.min_events: 512
+      flush.timeout: 5s
+
+    monitoring:
+      enabled: true
+      cluster_uuid: ${cluster_uuid}
+      elasticsearch:
+        hosts: ["${monitoring_url}"]
+        api_key: ${monitoring_api_key}
+
+    output.elasticsearch:
+      hosts: ['$${ELASTICSEARCH_HOST}:$${ELASTICSEARCH_PORT}']
+      api_key: ${beats_api_key}
+      index: "filebeat-%%{[agent.version]}-mt-${environment}"
+      bulk_max_size: 512
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: filebeat
+  namespace: ${namespace}
+  labels:
+    k8s-app: filebeat
+    app: ${filebeat_label_app}
+    owner: ${filebeat_label_owner}
+    department: ${filebeat_label_department}
+    team: ${filebeat_label_team}
+spec:
+  selector:
+    matchLabels:
+      k8s-app: filebeat
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        k8s-app: filebeat
+        app: ${filebeat_label_app}
+        owner: ${filebeat_label_owner}
+        department: ${filebeat_label_department}
+        team: ${filebeat_label_team}
+    spec:
+      priorityClassName: high-priority
+      serviceAccountName: filebeat
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: filebeat
+        image: ${repo}:${agent_version}
+        args: [
+          "-c", "/etc/filebeat.yml",
+          "-e",
+        ]
+        env:
+        - name: ELASTICSEARCH_HOST
+          value: "${elastic_url}"
+        - name: ELASTICSEARCH_PORT
+          value: "${elastic_port}"
+        - name: ROLL
+          value: "42"
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        securityContext:
+          runAsUser: 0
+          # If using Red Hat OpenShift uncomment this:
+          #privileged: true
+        resources:
+          limits:
+            memory: 1100Mi
+          requests:
+            cpu: 100m
+            memory: 200Mi
+        volumeMounts:
+        - name: config
+          mountPath: /etc/filebeat.yml
+          readOnly: true
+          subPath: filebeat.yml
+        - name: data
+          mountPath: /usr/share/filebeat/data
+        - name: varlog
+          mountPath: /var/log
+          readOnly: true
+      volumes:
+      - name: config
+        secret:
+          defaultMode: 0600
+          secretName: filebeat-config
+      - name: varlog
+        hostPath:
+          path: /var/log
+      # data folder stores a registry of read status for all files, so we don't send everything again on a Filebeat pod restart
+      - name: data
+        hostPath:
+          path: /var/lib/filebeat-data
+          type: DirectoryOrCreate
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: filebeat
+subjects:
+- kind: ServiceAccount
+  name: filebeat
+  namespace: ${namespace}
+roleRef:
+  kind: ClusterRole
+  name: filebeat
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: filebeat
+  labels:
+    k8s-app: filebeat
+rules:
+- apiGroups: [""] # "" indicates the core API group
+  resources:
+  - namespaces
+  - pods
+  - nodes
+  verbs:
+  - get
+  - watch
+  - list
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: filebeat
+  namespace: ${namespace}
+  labels:
+    k8s-app: filebeat
+---
